@@ -1,0 +1,29 @@
+# 依赖
+node_modules
+
+# 构建产物
+.next
+out
+build
+tsconfig.tsbuildinfo
+
+# 本地运行时数据(任务记录、生成的视频/音频)
+.data
+public/renders
+public/uploads
+
+# 日志
+*.log
+
+# macOS
+.DS_Store
+
+# 本地环境变量(SadTalker 路径等机器相关/敏感配置)
+.env
+.env.local
+
+# 第三方账号凭证 —— 严禁提交(含飞书 OAuth 授权信息)
+.feishu-wiki-sync.json
+
+# 与本仓库无关的其它课题文档
+实习生课题任务*.md
