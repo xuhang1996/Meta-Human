@@ -57,26 +57,44 @@ export async function listEdgeTtsVoices() {
 
 // 用 Edge-TTS 把文案合成成音频。输出为 speech.mp3，写入 cwd（jobDir）。
 // Edge-TTS 模块名是 edge_tts（下划线）。
+// Edge-TTS 走微软云服务，偶发 NoAudioReceived（网络抖动/服务端限流/token 失效），
+// 因此做指数退避重试，避免单次失败直接中断整个渲染管线。
 export async function synthesizeEdgeTtsSpeech(
   cwd: string,
   voice: string,
   script: string,
   outputFileName = "speech.mp3",
 ) {
-  await runCommand(
-    edgeTtsPython(),
-    [
-      "-m",
-      "edge_tts",
-      "--voice",
-      voice,
-      "--text",
-      script,
-      "--write-media",
-      outputFileName,
-    ],
-    { cwd },
-  );
+  const maxAttempts = 3;
+  let lastError: unknown;
 
-  return outputFileName;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await runCommand(
+        edgeTtsPython(),
+        [
+          "-m",
+          "edge_tts",
+          "--voice",
+          voice,
+          "--text",
+          script,
+          "--write-media",
+          outputFileName,
+        ],
+        { cwd },
+      );
+      return outputFileName;
+    } catch (error) {
+      lastError = error;
+      // 未到最大次数则退避后重试（1s、2s）。
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, 1000 * attempt),
+        );
+      }
+    }
+  }
+
+  throw lastError;
 }
