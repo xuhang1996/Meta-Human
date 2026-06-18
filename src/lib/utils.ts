@@ -38,6 +38,9 @@ export function formatDuration(seconds?: number) {
 }
 
 export function slugifyFileExtension(name: string) {
-  const match = name.toLowerCase().match(/\.(png|jpg|jpeg|webp)$/);
+  // 支持 MuseTalk 引擎上传的视频底片（mp4/mov/webm/m4v）。
+  const match = name
+    .toLowerCase()
+    .match(/\.(png|jpg|jpeg|webp|mp4|mov|webm|m4v)$/);
   return match?.[0] ?? ".png";
 }

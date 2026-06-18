@@ -259,13 +259,17 @@ async function renderTalkingHeadPresenterVideo(options: {
   title: string;
   voice: string;
   theme: ThemeId;
+  // 自定义角标文案，默认"本地口型模型 · voice"。MuseTalk 等其他口型引擎复用
+  // 此模板时传入各自文案，避免重复一大段 filter_complex 代码。
+  label?: string;
 }) {
   const theme = THEME_MAP[options.theme];
   const title = escapeDrawtext(options.title);
-  const label = escapeDrawtext(`本地口型模型 · ${options.voice}`);
+  const label = escapeDrawtext(options.label ?? `本地口型模型 · ${options.voice}`);
   const filter = [
     `color=c=${solidColor(theme.backdropTint)}:s=1280x720:r=25[bg];`,
-    // SadTalker 输出是 512x512 正方形，用 decrease 完整放入再 pad，避免裁掉人脸。
+    // 口型视频尺寸不固定（SadTalker 512x512，MuseTalk 按底片原尺寸），
+    // 用 decrease 完整放入再 pad 到 520x580，避免裁掉人脸。
     `[0:v]fps=25,scale=520:580:force_original_aspect_ratio=decrease,pad=520:580:(ow-iw)/2:(oh-ih)/2:color=black@0[fg];`,
     `[1:a]aformat=channel_layouts=mono,showwaves=s=980x120:mode=line:colors=${theme.waveformColor},format=rgba[waves];`,
     `[bg]drawbox=x=110:y=78:w=1060:h=564:color=${theme.panelColor}:t=fill[panel];`,
@@ -355,7 +359,10 @@ export async function renderModelPortraitPresenterVideo(options: {
   // enhancer 为空时不传 --enhancer，SadTalker 会跳过面部增强（CPU 上 gfpgan 极慢）。
   // 设备由 SADTALKER_DEVICE 控制：默认走 GPU（不传 --cpu，自动用 CUDA）；
   // 显式设为 cpu 时才传 --cpu。有 GPU 时推理速度提升数十倍。
+  // size 由 SADTALKER_SIZE 控制（256/512），默认 512：原生分辨率翻倍，
+  // 配合 GFPGAN 面部增强，画质显著优于 256。显存足够时建议用 512。
   const device = process.env.SADTALKER_DEVICE || "gpu";
+  const size = process.env.SADTALKER_SIZE || "512";
   const sadtalkerArgs = [
     inferencePath,
     "--driven_audio",
@@ -370,7 +377,7 @@ export async function renderModelPortraitPresenterVideo(options: {
     preprocess,
     "--still",
     "--size",
-    "256",
+    size,
     "--verbose",
   ];
 
@@ -395,6 +402,101 @@ export async function renderModelPortraitPresenterVideo(options: {
     title: options.title,
     voice: options.voice,
     theme: options.theme,
+  });
+}
+
+export async function renderMuseTalkPresenterVideo(options: {
+  avatarFileName: string;
+  jobDir: string;
+  theme: ThemeId;
+  title: string;
+  voice: string;
+  avatarMediaType: "image" | "video";
+}) {
+  const musetalkDir = process.env.MUSETALK_DIR;
+  const pythonBin = process.env.MUSETALK_PYTHON || "python";
+  // MuseTalk 用 os.system 调 ffmpeg 抽帧/合帧，必须显式给 ffmpeg bin 目录，
+  // 否则在 PATH 未刷新的会话里抽帧失败（division by zero）。
+  const ffmpegPath = process.env.MUSETALK_FFMPEG_PATH || process.env.FFMPEG_BIN || "";
+  const gpuId = process.env.MUSETALK_GPU_ID ?? "0";
+
+  if (!musetalkDir) {
+    throw new Error(
+      "MuseTalk 未配置。请先设置 MUSETALK_DIR（MuseTalk 仓库目录）和 MUSETALK_PYTHON（Python 解释器），或切换为其他引擎。",
+    );
+  }
+
+  const sourcePath = path.join(options.jobDir, options.avatarFileName);
+  // MuseTalk 通过 whisper/librosa 读音频，wav 最稳。
+  const wavPath = path.join(options.jobDir, "speech.wav");
+  const resultDir = path.join(options.jobDir, "musetalk-out");
+
+  await assertReadableFile(path.join(musetalkDir, "scripts", "inference.py"), "MuseTalk 推理脚本");
+  await assertReadableFile(sourcePath, "头像/视频文件");
+
+  await runCommand(
+    "ffmpeg",
+    ["-y", "-i", "speech.m4a", "-ac", "1", "-ar", "16000", "speech.wav"],
+    { cwd: options.jobDir },
+  );
+  await assertReadableFile(wavPath, "WAV 音频");
+
+  // MuseTalk 的 inference.py 不接受 --video_path/--audio_path 命令行参数，
+  // 输入通过 --inference_config 指向一个 yaml（task_0: {video_path, audio_path}）。
+  // video_path 接受视频或单张图片（图片模式会单帧重复用）。
+  const configPath = path.join(options.jobDir, "musetalk_task.yaml");
+  // Windows 路径反斜杠在 yaml 里需转义，统一用正斜杠。
+  const configContent = [
+    "task_0:",
+    `  video_path: "${sourcePath.replace(/\\/g, "/")}"`,
+    `  audio_path: "${wavPath.replace(/\\/g, "/")}"`,
+  ].join("\n");
+  await writeFile(configPath, configContent, "utf8");
+
+  // 结果落在 result_dir/v15/<input>_<audio>.mp4。--ffmpeg_path 给抽帧用的 ffmpeg 目录。
+  const musetalkArgs = [
+    "-m",
+    "scripts.inference",
+    "--inference_config",
+    configPath,
+    "--result_dir",
+    resultDir,
+    "--unet_model_path",
+    path.join(musetalkDir, "models", "musetalkV15", "unet.pth"),
+    "--unet_config",
+    path.join(musetalkDir, "models", "musetalkV15", "musetalk.json"),
+    "--whisper_dir",
+    path.join(musetalkDir, "models", "whisper"),
+    "--vae_type",
+    "sd-vae",
+    "--version",
+    "v15",
+    "--gpu_id",
+    gpuId,
+  ];
+
+  if (ffmpegPath) {
+    musetalkArgs.push("--ffmpeg_path", ffmpegPath);
+  }
+
+  await runCommand(pythonBin, musetalkArgs, { cwd: musetalkDir });
+
+  // MuseTalk 输出到 result_dir/v15/ 下，取该目录唯一 mp4 作为口型源。
+  const talkingHeadRelative = await pickLatestMp4(
+    path.join(resultDir, "v15"),
+    options.jobDir,
+  );
+  if (!talkingHeadRelative) {
+    throw new Error("MuseTalk 未生成可用的口型视频，请检查模型是否完整。");
+  }
+
+  return renderTalkingHeadPresenterVideo({
+    jobDir: options.jobDir,
+    talkingHeadFileName: talkingHeadRelative,
+    title: options.title,
+    voice: options.voice,
+    theme: options.theme,
+    label: `实时口型 · ${options.voice}`,
   });
 }
 

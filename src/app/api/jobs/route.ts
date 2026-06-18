@@ -24,8 +24,9 @@ export async function POST(request: Request) {
   "expressive"
     ? "expressive"
     : "natural") as MotionPreset;
-  const renderEngine = (formData.get("renderEngine")?.toString().trim() === "model"
-    ? "model"
+  const renderEngineRaw = formData.get("renderEngine")?.toString().trim();
+  const renderEngine = (["fast", "model", "musetalk"].includes(renderEngineRaw ?? "")
+    ? renderEngineRaw
     : "fast") as RenderEngine;
   const sampleAvatarId = (formData.get("sampleAvatarId")?.toString().trim() ||
     "analyst-aurora") as SampleAvatarId;
@@ -38,23 +39,36 @@ export async function POST(request: Request) {
     );
   }
 
-  if (avatar instanceof File && avatar.size > 0 && !avatar.type.startsWith("image/")) {
-    return Response.json(
-      { error: "头像仅支持图片文件。" },
-      { status: 400 },
-    );
+  // MuseTalk 引擎支持上传视频底片（重配音）；其他引擎仅支持图片。
+  if (avatar instanceof File && avatar.size > 0) {
+    const isImage = avatar.type.startsWith("image/");
+    const isVideo = avatar.type.startsWith("video/");
+    const allowVideo = renderEngine === "musetalk";
+
+    if (!isImage && !(isVideo && allowVideo)) {
+      return Response.json(
+        {
+          error: allowVideo
+            ? "仅支持图片或视频文件。"
+            : "该引擎仅支持图片文件，上传视频请切换到「实时口型（MuseTalk）」引擎。",
+        },
+        { status: 400 },
+      );
+    }
   }
 
   const jobId = crypto.randomUUID();
   const jobDir = await ensureJobRenderDir(jobId);
   let avatarFileName = "avatar.png";
   let avatarMode: VideoJob["avatarMode"] = "sample";
+  let avatarMediaType: VideoJob["avatarMediaType"] = "image";
 
   if (avatar instanceof File && avatar.size > 0) {
     avatarFileName = `avatar${slugifyFileExtension(avatar.name)}`;
     const avatarBytes = Buffer.from(await avatar.arrayBuffer());
     await writeFile(`${jobDir}/${avatarFileName}`, avatarBytes);
     avatarMode = "upload";
+    avatarMediaType = avatar.type.startsWith("video/") ? "video" : "image";
   } else {
     const sample = SAMPLE_AVATAR_MAP[sampleAvatarId] ?? SAMPLE_AVATAR_MAP["analyst-aurora"];
     const sourcePath = path.join(process.cwd(), "public", sample.src.replace(/^\//, ""));
@@ -71,6 +85,7 @@ export async function POST(request: Request) {
     motionPreset,
     renderEngine,
     avatarMode,
+    avatarMediaType,
     sampleAvatarId,
     status: "queued",
     createdAt: now,
@@ -86,9 +101,13 @@ export async function POST(request: Request) {
       render:
         renderEngine === "model"
           ? "本地 SadTalker"
-          : avatarMode === "sample"
-            ? "内置数字人动效"
-            : "上传头像动效",
+          : renderEngine === "musetalk"
+            ? avatarMediaType === "video"
+              ? "本地 MuseTalk（视频配音）"
+              : "本地 MuseTalk"
+            : avatarMode === "sample"
+              ? "内置数字人动效"
+              : "上传头像动效",
     },
     logs: [
       {

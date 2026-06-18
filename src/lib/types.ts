@@ -3,7 +3,7 @@ export type JobStatus = "queued" | "processing" | "completed" | "failed";
 export type ThemeId = "ember" | "jade" | "graphite";
 export type SampleAvatarId = "analyst-aurora" | "host-river";
 export type MotionPreset = "natural" | "expressive";
-export type RenderEngine = "fast" | "model";
+export type RenderEngine = "fast" | "model" | "musetalk";
 
 export interface VoiceOption {
   name: string;
@@ -38,6 +38,8 @@ export interface VideoJob {
   motionPreset?: MotionPreset;
   renderEngine?: RenderEngine;
   avatarMode: "upload" | "sample";
+  // MuseTalk 引擎支持上传视频底片，用于区分图片/视频处理（仅 musetalk 引擎可能为 video）。
+  avatarMediaType?: "image" | "video";
   sampleAvatarId?: SampleAvatarId;
   status: JobStatus;
   createdAt: string;

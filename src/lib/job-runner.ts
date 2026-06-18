@@ -4,6 +4,7 @@ import {
   renderAnimatedPortraitPresenterVideo,
   renderAnimatedSamplePresenterVideo,
   renderModelPortraitPresenterVideo,
+  renderMuseTalkPresenterVideo,
   renderPresenterVideo,
   synthesizeSpeech,
   writeSubtitleFile,
@@ -89,7 +90,20 @@ async function processJob(jobId: string) {
 
     let videoFileName: string;
 
-    if (job.renderEngine === "model") {
+    if (job.renderEngine === "musetalk") {
+      videoFileName = await renderMuseTalkPresenterVideo({
+        avatarFileName,
+        jobDir,
+        theme: job.theme,
+        title: job.title,
+        voice: job.voice,
+        avatarMediaType: job.avatarMediaType ?? "image",
+      });
+      await appendJobLog(
+        jobId,
+        `已使用${RENDER_ENGINE_LABELS[job.renderEngine]}渲染`,
+      );
+    } else if (job.renderEngine === "model") {
       videoFileName = await renderModelPortraitPresenterVideo({
         avatarFileName,
         jobDir,

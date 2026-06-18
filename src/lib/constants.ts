@@ -120,11 +120,17 @@ export const RENDER_ENGINE_OPTIONS: Array<{
     name: "高质量模型",
     description: "使用本地 SadTalker，口型和表情更自然，需要先配置模型",
   },
+  {
+    id: "musetalk",
+    name: "实时口型",
+    description: "使用本地 MuseTalk，支持照片或视频，口型精准、速度快",
+  },
 ];
 
 export const RENDER_ENGINE_LABELS: Record<RenderEngine, string> = {
   fast: "极速预览",
   model: "高质量模型",
+  musetalk: "实时口型",
 };
 
 export const RECOMMENDED_VOICES = [

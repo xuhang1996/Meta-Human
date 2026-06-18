@@ -284,10 +284,14 @@ export function StudioClient() {
           </label>
 
           <label className="field">
-            <span>上传头像</span>
+            <span>上传头像{renderEngine === "musetalk" ? "或视频" : ""}</span>
             <input
               className="file-input"
-              accept="image/png,image/jpeg,image/webp"
+              accept={
+                renderEngine === "musetalk"
+                  ? "image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm"
+                  : "image/png,image/jpeg,image/webp"
+              }
               onChange={(event) => {
                 setAvatarFile(event.target.files?.[0] ?? null);
               }}
@@ -326,24 +330,36 @@ export function StudioClient() {
 
         {avatarPreviewUrl ? (
           <div className="avatar-preview">
-            <Image
-              alt="头像预览"
-              className="avatar-stage"
-              height={720}
-              sizes="(max-width: 760px) 100vw, 50vw"
-              src={avatarPreviewUrl}
-              unoptimized
-              width={1280}
-            />
+            {avatarFile?.type.startsWith("video/") ? (
+              <video
+                className="avatar-stage"
+                src={avatarPreviewUrl}
+                controls
+                muted
+              />
+            ) : (
+              <Image
+                alt="头像预览"
+                className="avatar-stage"
+                height={720}
+                sizes="(max-width: 760px) 100vw, 50vw"
+                src={avatarPreviewUrl}
+                unoptimized
+                width={1280}
+              />
+            )}
           </div>
         ) : (
           <div className="avatar-placeholder">
-            请选择内置数字人，或上传你自己的头像照片。
+            请选择内置数字人，或上传你自己的头像
+            {renderEngine === "musetalk" ? "或视频" : ""}。
           </div>
         )}
 
         <p className="helper-text">
-          上传真人头像建议使用“高质量模型”（本地 SadTalker）。“极速预览”只适合快速验证流程，不能保证真人口型和表情自然。
+          {renderEngine === "musetalk"
+            ? "「实时口型」支持上传照片或视频：照片会生成口型视频；视频则保留原画面动作、仅替换嘴部配音（适合给已有视频重配音）。"
+            : "上传真人头像建议使用「高质量模型」（本地 SadTalker）。「极速预览」只适合快速验证流程，不能保证真人口型和表情自然。"}
         </p>
 
         {formError ? <p className="form-error">{formError}</p> : null}
@@ -400,6 +416,13 @@ export function StudioClient() {
                 controls
                 preload="metadata"
                 src={activeJob.videoUrl}
+              />
+            ) : activeJob.avatarMediaType === "video" ? (
+              <video
+                className="avatar-stage"
+                controls
+                preload="metadata"
+                src={activeJob.avatarUrl}
               />
             ) : (
               <Image
