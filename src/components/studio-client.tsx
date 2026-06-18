@@ -81,7 +81,7 @@ export function StudioClient() {
       startTransition(() => {
         setJobs(jobsPayload.jobs);
         setVoices(voicesPayload.voices);
-        setVoice((current) => current || voicesPayload.voices[0]?.name || "Ting-Ting");
+        setVoice((current) => current || voicesPayload.voices[0]?.name || "zh-CN-XiaoxiaoNeural");
       });
     }
 
@@ -454,7 +454,7 @@ export function StudioClient() {
         <div className="provider-strip">
           <div>
             <span>语音合成</span>
-            <strong>macOS say</strong>
+            <strong>{activeJob?.providers.tts ?? "Edge-TTS"}</strong>
           </div>
           <div>
             <span>视频合成</span>

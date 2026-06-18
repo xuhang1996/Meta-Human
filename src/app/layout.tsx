@@ -15,7 +15,7 @@ const bodyFont = Source_Sans_3({
 
 export const metadata: Metadata = {
   title: "数字人视频工作台",
-  description: "基于 macOS 语音与 ffmpeg 的本地优先数字人视频工具。",
+  description: "基于 Edge-TTS 与 ffmpeg 的本地优先数字人视频工具。",
 };
 
 export default function RootLayout({

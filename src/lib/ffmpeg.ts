@@ -4,56 +4,49 @@ import path from "node:path";
 import { renderAnimatedPortraitFrames, renderAnimatedSampleFrames } from "./avatar-motion";
 import { RECOMMENDED_VOICES, THEME_MAP } from "./constants";
 import { runCommand } from "./render-process";
+import { listEdgeTtsVoices, synthesizeEdgeTtsSpeech } from "./tts";
 import {
   MotionPreset,
   SampleAvatarId,
   SubtitleCue,
   ThemeId,
-  VoiceOption,
 } from "./types";
 
-const VIDEO_FONT_FILE = "/System/Library/Fonts/STHeiti Medium.ttc";
-const VIDEO_FONT_NAME = "STHeiti";
+// 字体：macOS 用华文黑体，Windows 用黑体（SimHei）。
+// 通过平台判断切换，避免硬编码单一平台路径。
+// 注意：用 simhei.ttf（单 TTF）而非 msyh.ttc（TTC 集合），因为 ffmpeg 的
+// drawtext 和 libass subtitles 对 TTC 集合字体的 face 选择不可控，易渲染异常。
+// drawtext 的 fontfile 在 Windows 下需转义盘符冒号。
+const IS_WINDOWS = process.platform === "win32";
+const VIDEO_FONT_FILE = IS_WINDOWS
+  ? "C\\:/Windows/Fonts/simhei.ttf"
+  : "/System/Library/Fonts/STHeiti Medium.ttc";
+const VIDEO_FONT_NAME = IS_WINDOWS ? "SimHei" : "STHeiti";
 
 export async function listSystemVoices() {
-  const output = await runCommand("say", ["-v", "?"]);
-  const voices = output
-    .split("\n")
-    .map((line) => {
-      const match = line.match(/^(.+?)\s{2,}([a-z]{2}_[A-Z]{2})\s+#\s+(.*)$/);
+  // 原实现调用 macOS `say -v "?"`；跨平台改用 Edge-TTS 音色列表。
+  const voices = await listEdgeTtsVoices();
 
-      if (!match) {
-        return null;
-      }
+  voices.sort((left, right) => {
+    const leftRank = RECOMMENDED_VOICES.indexOf(left.name);
+    const rightRank = RECOMMENDED_VOICES.indexOf(right.name);
 
-      return {
-        name: match[1].trim(),
-        locale: match[2],
-        sample: match[3].trim(),
-      } satisfies VoiceOption;
-    })
-    .filter((voice): voice is VoiceOption => Boolean(voice))
-    .filter((voice) => /^(zh|en|ja)_/.test(voice.locale))
-    .sort((left, right) => {
-      const leftRank = RECOMMENDED_VOICES.indexOf(left.name);
-      const rightRank = RECOMMENDED_VOICES.indexOf(right.name);
+    if (leftRank === -1 && rightRank === -1) {
+      return left.name.localeCompare(right.name);
+    }
 
-      if (leftRank === -1 && rightRank === -1) {
-        return left.name.localeCompare(right.name);
-      }
+    if (leftRank === -1) {
+      return 1;
+    }
 
-      if (leftRank === -1) {
-        return 1;
-      }
+    if (rightRank === -1) {
+      return -1;
+    }
 
-      if (rightRank === -1) {
-        return -1;
-      }
+    return leftRank - rightRank;
+  });
 
-      return leftRank - rightRank;
-    });
-
-  return voices.slice(0, 18);
+  return voices.slice(0, 24);
 }
 
 export async function synthesizeSpeech(
@@ -61,13 +54,13 @@ export async function synthesizeSpeech(
   voice: string,
   script: string,
 ) {
-  await runCommand("say", ["-v", voice, "-r", "180", "-o", "speech.aiff", script], {
-    cwd: jobDir,
-  });
+  // 原实现用 macOS `say` 生成 aiff 再转 m4a；改用 Edge-TTS 直接合成 mp3，
+  // 再用 ffmpeg 转成 m4a，保持下游（showwaves、probeDuration 等）契约不变。
+  await synthesizeEdgeTtsSpeech(jobDir, voice, script, "speech.mp3");
 
   await runCommand(
     "ffmpeg",
-    ["-y", "-i", "speech.aiff", "-c:a", "aac", "-b:a", "192k", "speech.m4a"],
+    ["-y", "-i", "speech.mp3", "-c:a", "aac", "-b:a", "192k", "speech.m4a"],
     { cwd: jobDir },
   );
 
@@ -360,6 +353,9 @@ export async function renderModelPortraitPresenterVideo(options: {
   // SadTalker 输出到 result_dir/<timestamp>/<timestamp>.mp4，
   // 这里用 --result_dir 指定目录，再在调用后取该目录下唯一 mp4 作为 talking-head 源。
   // enhancer 为空时不传 --enhancer，SadTalker 会跳过面部增强（CPU 上 gfpgan 极慢）。
+  // 设备由 SADTALKER_DEVICE 控制：默认走 GPU（不传 --cpu，自动用 CUDA）；
+  // 显式设为 cpu 时才传 --cpu。有 GPU 时推理速度提升数十倍。
+  const device = process.env.SADTALKER_DEVICE || "gpu";
   const sadtalkerArgs = [
     inferencePath,
     "--driven_audio",
@@ -373,11 +369,14 @@ export async function renderModelPortraitPresenterVideo(options: {
     "--preprocess",
     preprocess,
     "--still",
-    "--cpu",
     "--size",
     "256",
     "--verbose",
   ];
+
+  if (device === "cpu") {
+    sadtalkerArgs.push("--cpu");
+  }
 
   if (enhancer) {
     sadtalkerArgs.push("--enhancer", enhancer);

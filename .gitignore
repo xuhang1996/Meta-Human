@@ -12,6 +12,9 @@ tsconfig.tsbuildinfo
 public/renders
 public/uploads
 
+# 运行时按需下载的模型权重(detect-face.py 首次运行自动拉取)
+scripts/models
+
 # 日志
 *.log
 

@@ -16,7 +16,7 @@ export default function HomePage() {
         <div className="hero-metrics">
           <div className="metric">
             <span>当前能力</span>
-            <strong>`say` + `ffmpeg`</strong>
+            <strong>`Edge-TTS` + `ffmpeg`</strong>
           </div>
           <div className="metric">
             <span>升级方向</span>

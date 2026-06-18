@@ -18,7 +18,7 @@ export async function POST(request: Request) {
   const formData = await request.formData();
   const title = formData.get("title")?.toString().trim() || "未命名视频";
   const script = formData.get("script")?.toString().trim() ?? "";
-  const voice = formData.get("voice")?.toString().trim() || "Samantha";
+  const voice = formData.get("voice")?.toString().trim() || "zh-CN-XiaoxiaoNeural";
   const theme = formData.get("theme")?.toString().trim() as ThemeId;
   const motionPreset = (formData.get("motionPreset")?.toString().trim() ===
   "expressive"
@@ -82,7 +82,7 @@ export async function POST(request: Request) {
       detail: "等待本地渲染队列处理",
     },
     providers: {
-      tts: "macOS say",
+      tts: "Edge-TTS",
       render:
         renderEngine === "model"
           ? "本地 SadTalker"

@@ -70,7 +70,7 @@ export const SCRIPT_PRESETS = [
 
 export const PIPELINE_STEPS = [
   "创建本地任务并保存头像素材",
-  "使用 macOS say 生成语音，后续可替换为本地 TTS 模型",
+  "使用 Edge-TTS 生成神经网络语音",
   "自动拆分文案并生成字幕时间轴",
   "用 ffmpeg 合成数字人画面、波形和字幕",
   "导出 MP4，便于预览、下载和后续交付",
@@ -128,12 +128,12 @@ export const RENDER_ENGINE_LABELS: Record<RenderEngine, string> = {
 };
 
 export const RECOMMENDED_VOICES = [
-  "Ting-Ting",
-  "Sin-ji",
-  "Mei-Jia",
-  "Samantha",
-  "Karen",
-  "Daniel",
+  "zh-CN-XiaoxiaoNeural",
+  "zh-CN-YunxiNeural",
+  "zh-CN-XiaoyiNeural",
+  "zh-CN-YunyangNeural",
+  "en-US-AriaNeural",
+  "en-US-GuyNeural",
 ];
 
 export const SAMPLE_AVATARS: SampleAvatarOption[] = [

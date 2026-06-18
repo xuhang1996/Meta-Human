@@ -39,7 +39,11 @@ export interface PortraitFeatures {
 }
 
 export async function detectPortraitFeatures(imagePath: string) {
-  const scriptPath = path.join(process.cwd(), "scripts", "detect-face.swift");
-  const output = await runCommand("swift", [scriptPath, imagePath]);
+  // 原实现调用 macOS Swift Vision（detect-face.swift）；跨平台改用
+  // MediaPipe 版 Python 脚本 detect-face.py，输出 JSON 结构保持一致。
+  // 解释器路径由 EDGE_TTS_PYTHON 指定（与 TTS 共用 venv），未配置回退 python。
+  const scriptPath = path.join(process.cwd(), "scripts", "detect-face.py");
+  const pythonBin = process.env.EDGE_TTS_PYTHON || "python";
+  const output = await runCommand(pythonBin, [scriptPath, imagePath]);
   return JSON.parse(output) as PortraitFeatures;
 }

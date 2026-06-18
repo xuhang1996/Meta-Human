@@ -41,7 +41,7 @@ async function processJob(jobId: string) {
       progress: {
         percent: 18,
         stage: "speech",
-        detail: "正在使用 macOS say 生成本地配音",
+        detail: "正在使用 Edge-TTS 生成本地配音",
       },
     }));
     await appendJobLog(jobId, "开始生成语音");
