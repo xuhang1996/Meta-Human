@@ -1,8 +1,121 @@
-# SadTalker 高质量口型环境搭建指南
+# 口型引擎环境搭建指南（SadTalker / MuseTalk）
 
-「高质量模型」渲染引擎依赖本地 SadTalker。这是接手本仓库时**最耗时、最容易踩坑**的部分，请完整阅读本文档。
+本仓库有两个本地口型引擎，都需要 Python + 模型权重：
 
-> 如果你只想验证前端流程，可以跳过本步，使用「极速预览」引擎（无需 Python）。但真实人脸视频必须用 SadTalker。
+- **「高质量模型」(SadTalker)** — 3DMM，照片 → 口型视频。下文「一、SadTalker」。
+- **「实时口型」(MuseTalk)** — 支持照片**和视频**底片（可给视频重配音）。下文「二、MuseTalk」。
+
+> 如果你只想验证前端流程，可以跳过两者，使用「极速预览」引擎（无需 Python）。但真实人脸视频必须用 SadTalker 或 MuseTalk。
+
+> **平台说明**：项目最初在 macOS（Apple Silicon）开发，**现已迁移到 Windows + NVIDIA GPU + Edge-TTS**。下文「一、SadTalker」保留原始 macOS 步骤（已验证可用，作为参考）；Windows 下推荐直接按「二、MuseTalk」搭建 MuseTalk 引擎（步骤已按 Windows 实测）。两个引擎都需要 CUDA GPU 才实用。
+
+---
+
+## 二、MuseTalk 实时口型引擎（Windows + GPU）
+
+「实时口型」引擎依赖本地 MuseTalk。相比 SadTalker，它额外支持**视频底片**（给已有视频重新配音并对口型），且在 GPU 上出片更快。以下步骤已在 Windows + NVIDIA GPU 实测通过。
+
+### 前置条件
+
+| 项目 | 要求 |
+|---|---|
+| 操作系统 | Windows（已在 Win 11 + NVIDIA GPU 验证） |
+| Python | 3.10（与 SadTalker venv 可共用一个，也可独立） |
+| ffmpeg | 已安装（Gyan.FFmpeg 的 full build 即可，需含 ffprobe） |
+| GPU | NVIDIA CUDA（CPU 理论可行但慢几十倍，不建议） |
+| 磁盘 | 约 6GB（venv + MuseTalk 模型，其中 `unet.pth` 3.2GB） |
+| 网络 | 能访问 HuggingFace（国内用 `hf-mirror.com` 镜像，见下） |
+
+### 1. 克隆 MuseTalk
+
+```bash
+git clone https://github.com/TMElyralab/MuseTalk.git D:/ai-code/MuseTalk
+# 国内 git clone 超时的话，用 tarball：
+# curl -L -o /tmp/musetalk.tar.gz "https://codeload.github.com/TMElyralab/MuseTalk/tar.gz/refs/heads/main"
+# tar -xzf /tmp/musetalk.tar.gz -C D:/ai-code/MuseTalk --strip-components=1
+```
+
+### 2. 创建 Python 3.10 venv 并装依赖
+
+```bash
+# 复用 SadTalker 的 venv（已装 torch/opencv 等）即可，或单独建一个：
+D:/path/to/python3.10.exe -m venv D:/ai-code/musetalk-venv
+D:/ai-code/musetalk-venv/Scripts/python.exe -m pip install --upgrade pip
+D:/ai-code/musetalk-venv/Scripts/python.exe -m pip install -r D:/ai-code/MuseTalk/requirements.txt
+```
+
+> MuseTalk 的 `requirements.txt` 含 `tensorflow`、`diffusers`、`transformers` 等。若与 SadTalker venv 冲突，建议独立 venv。
+
+### 3. 下载模型权重（约 5GB）
+
+仓库自带 `download_weights.bat`，**已配置国内 HuggingFace 镜像**（`HF_ENDPOINT=https://hf-mirror.com`），直接在 MuseTalk 目录双击或在 cmd 运行：
+
+```bat
+cd /d D:\ai-code\MuseTalk
+download_weights.bat
+```
+
+脚本会下载到 `models/` 下各子目录。应用实际使用的 v1.5 权重是：
+
+- `models/musetalkV15/unet.pth`（3.2GB，**最关键**）
+- `models/musetalkV15/musetalk.json`
+- `models/whisper/`（whisper-tiny）
+
+其余（dwpose / face-parse-bisent / sd-vae / syncnet）由 MuseTalk 内部依赖，脚本会一并下载。
+
+### 4. 配置 `.env.local`
+
+在 Meta-Human 根目录的 `.env.local` 中加入（路径按实际填写，参考 `.env.example`）：
+
+```bash
+MUSETALK_DIR=D:/ai-code/MuseTalk
+MUSETALK_PYTHON=D:/ai-code/musetalk-venv/Scripts/python.exe
+# MuseTalk 用 os.system 调 ffmpeg 抽帧，必须显式给 bin 目录（末尾带斜杠），
+# 否则在 PATH 未刷新的会话里抽帧会 division by zero 失败。
+MUSETALK_FFMPEG_PATH=C:/path/to/ffmpeg-8.1.1-full_build/bin/
+MUSETALK_GPU_ID=0
+# 可选：送入推理前长边缩放上限（默认 1280）
+# MUSETALK_MAX_DIMENSION=1280
+```
+
+### 5. 验证安装
+
+启动 `pnpm dev`，在前端选择「实时口型（MuseTalk）」引擎，上传一张**真人正脸照片**（竖图也可，会自动缩放），输入文案生成。成功的话任务会依次经过「语音生成 → 字幕 → 已使用实时口型渲染 → 视频渲染完成」，产物为 `public/renders/<jobId>/final.mp4`。
+
+也可直接用 MuseTalk 自带脚本验证（不经由本应用）：
+
+```bash
+cd D:/ai-code/MuseTalk
+# 编辑 configs/inference/test.yaml 填入 video_path（照片或视频）和 audio_path（wav）
+bash inference.sh v1.5 normal
+# 产物在 results/test/v15/*.mp4
+```
+
+### 常见问题
+
+| 现象 | 原因 / 解决 |
+|---|---|
+| `division by zero` / 抽帧失败 | 没设 `MUSETALK_FFMPEG_PATH`，或路径末尾没带斜杠 |
+| 任务报「MuseTalk 未生成可用的口型视频」 | 模型没下全，重点检查 `models/musetalkV15/unet.pth` 是否 3.2GB 且未损坏 |
+| `CUDA out of memory` | 调小 `MUSETALK_MAX_DIMENSION`（如 768）；或换更小的底片 |
+| 检测不到人脸 / 口型不动 | 底片不是清晰正脸；卡通图、侧脸、遮挡会失败。MuseTalk 需要真实人脸 |
+| 下载模型超时 | 确认走的是 `hf-mirror.com` 镜像（`download_weights.bat` 已设）；或挂代理后手动 `hf download ...` |
+| 竖图（手机自拍）渲染很慢 | 已自动缩放到长边 1280；若仍慢，调小 `MUSETALK_MAX_DIMENSION` |
+
+### 性能参考（NVIDIA GPU）
+
+| 输入 | 耗时 |
+|---|---|
+| 照片 + 6 秒文案 | ~20-40 秒 |
+| 视频底片 + 配音 | 视视频时长而定，通常略慢于纯照片 |
+
+> MuseTalk 在送入推理前会把长边超过 1280 的底片等比缩小（不影响口型质量，因 MuseTalk 实际只处理 256 脸部区域），缩放临时文件推理后自动删除。
+
+---
+
+## 一、SadTalker 高质量口型引擎（macOS 参考步骤）
+
+> ⚠️ 以下为项目最初在 macOS（Apple Silicon）上的搭建记录，**保留作参考**。Windows + GPU 的 SadTalker 搭建与之类似但需用 CUDA 版 torch、Windows 路径与 `.bat`/`.ps1` 替代 shell 命令；已有可用的 `sadtalker-venv` 时直接配 `.env.local` 即可。
 
 ## 前置条件
 

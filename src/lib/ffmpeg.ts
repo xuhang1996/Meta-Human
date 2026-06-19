@@ -5,6 +5,7 @@ import { renderAnimatedPortraitFrames, renderAnimatedSampleFrames } from "./avat
 import { RECOMMENDED_VOICES, THEME_MAP } from "./constants";
 import { runCommand } from "./render-process";
 import { listEdgeTtsVoices, synthesizeEdgeTtsSpeech } from "./tts";
+import { slugifyFileExtension } from "./utils";
 import {
   MotionPreset,
   SampleAvatarId,
@@ -93,6 +94,40 @@ async function probeDuration(jobDir: string, fileName: string) {
   };
 
   return Number(parsed.format?.duration ?? 0);
+}
+
+// 探测图像/视频的宽高（取首个视频流），用于判断是否需要在送入 MuseTalk 前
+// 缩放以提速。ffprobe 对单张图片也能返回宽高（当作单帧视频）。
+async function probeVideoDimension(jobDir: string, fileName: string) {
+  const output = await runCommand(
+    "ffprobe",
+    [
+      "-v",
+      "quiet",
+      "-print_format",
+      "json",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=width,height",
+      fileName,
+    ],
+    { cwd: jobDir },
+  );
+
+  const parsed = JSON.parse(output) as {
+    streams?: Array<{ width?: number; height?: number }>;
+  };
+  const stream = parsed.streams?.[0];
+  const width = stream?.width ?? 0;
+  const height = stream?.height ?? 0;
+  // 读不到尺寸通常意味着文件损坏或不是有效图片/视频。与其让 MuseTalk
+  // 在后续拿到一个不可用的输入再以晦涩的 division by zero 失败，这里直接抛错。
+  if (!width || !height) {
+    throw new Error("无法读取头像/视频的尺寸，文件可能损坏或不是有效的图片/视频。");
+  }
+
+  return Math.max(width, height);
 }
 
 function splitScriptIntoLines(script: string) {
@@ -434,24 +469,49 @@ export async function renderMuseTalkPresenterVideo(options: {
   await assertReadableFile(path.join(musetalkDir, "scripts", "inference.py"), "MuseTalk 推理脚本");
   await assertReadableFile(sourcePath, "头像/视频文件");
 
-  await runCommand(
-    "ffmpeg",
-    ["-y", "-i", "speech.m4a", "-ac", "1", "-ar", "16000", "speech.wav"],
-    { cwd: options.jobDir },
+  // MuseTalk 对大图极慢：处理复杂度与图像尺寸强相关（DWPose 人脸检测 + VAE 编码 +
+  // 逐帧生成都在原图尺寸上算）。手机原图常达 2000+ 像素，会让 2 分钟的任务拖到 1 小时。
+  // 这里在送入 MuseTalk 前把长边缩到 1280（仍远大于 MuseTalk 实际处理的 256 脸部区域，
+  // 不影响口型质量），大幅提速并降低内存峰值。
+  const maxSize = Number(process.env.MUSETALK_MAX_DIMENSION ?? "1280");
+  let sourceForMuseTalk = options.avatarFileName;
+  const sourceWidth = await probeVideoDimension(
+    options.jobDir,
+    options.avatarFileName,
   );
-  await assertReadableFile(wavPath, "WAV 音频");
+  if (sourceWidth > maxSize) {
+    const scaledFileName = `avatar_musetalk${slugifyFileExtension(
+      options.avatarFileName,
+    )}`;
+    await runCommand(
+      "ffmpeg",
+      [
+        "-y",
+        "-i",
+        options.avatarFileName,
+        "-vf",
+        // 限制"长边"而非仅宽度：竖图（手机自拍常态）宽度往往 < 1280，
+        // 旧表达式 scale='min(1280,iw)':-2 此时是 no-op，竖图根本没被缩小。
+        // 给宽高各设 maxSize 上限 + force_original_aspect_ratio=decrease：
+        // 长边精确落到 maxSize、保持宽高比、且不会放大小图。
+        `scale='min(${maxSize},iw)':'min(${maxSize},ih)':force_original_aspect_ratio=decrease`,
+        "-q:v",
+        "2",
+        scaledFileName,
+      ],
+      { cwd: options.jobDir },
+    );
+    sourceForMuseTalk = scaledFileName;
+  }
+  const sourcePathForMuseTalk = path.join(options.jobDir, sourceForMuseTalk);
+  // 仅在确实做了缩放时才需要清理临时文件（与原文件同名则不动）。
+  const scaledTempPath =
+    sourceForMuseTalk !== options.avatarFileName ? sourcePathForMuseTalk : null;
 
   // MuseTalk 的 inference.py 不接受 --video_path/--audio_path 命令行参数，
   // 输入通过 --inference_config 指向一个 yaml（task_0: {video_path, audio_path}）。
   // video_path 接受视频或单张图片（图片模式会单帧重复用）。
   const configPath = path.join(options.jobDir, "musetalk_task.yaml");
-  // Windows 路径反斜杠在 yaml 里需转义，统一用正斜杠。
-  const configContent = [
-    "task_0:",
-    `  video_path: "${sourcePath.replace(/\\/g, "/")}"`,
-    `  audio_path: "${wavPath.replace(/\\/g, "/")}"`,
-  ].join("\n");
-  await writeFile(configPath, configContent, "utf8");
 
   // 结果落在 result_dir/v15/<input>_<audio>.mp4。--ffmpeg_path 给抽帧用的 ffmpeg 目录。
   const musetalkArgs = [
@@ -477,6 +537,30 @@ export async function renderMuseTalkPresenterVideo(options: {
 
   if (ffmpegPath) {
     musetalkArgs.push("--ffmpeg_path", ffmpegPath);
+  }
+
+  try {
+    await runCommand(
+      "ffmpeg",
+      ["-y", "-i", "speech.m4a", "-ac", "1", "-ar", "16000", "speech.wav"],
+      { cwd: options.jobDir },
+    );
+    await assertReadableFile(wavPath, "WAV 音频");
+
+    // Windows 路径反斜杠在 yaml 里需转义，统一用正斜杠。
+    const configContent = [
+      "task_0:",
+      `  video_path: "${sourcePathForMuseTalk.replace(/\\/g, "/")}"`,
+      `  audio_path: "${wavPath.replace(/\\/g, "/")}"`,
+    ].join("\n");
+    await writeFile(configPath, configContent, "utf8");
+
+    await runCommand(pythonBin, musetalkArgs, { cwd: musetalkDir });
+  } finally {
+    // 缩放后的底片仅用于本次推理，推理结束（无论成败）即删除，避免逐任务堆积。
+    if (scaledTempPath) {
+      await rm(scaledTempPath, { force: true });
+    }
   }
 
   await runCommand(pythonBin, musetalkArgs, { cwd: musetalkDir });

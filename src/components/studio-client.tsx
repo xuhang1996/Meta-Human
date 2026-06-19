@@ -122,9 +122,42 @@ export function StudioClient() {
     });
   }
 
+  // 切换渲染引擎：仅「实时口型」支持视频，切到其他引擎时若当前选中的是视频，
+  // 就清空它（否则旧选择会残留并在提交时被服务器拒绝）。图片对所有引擎有效，保留。
+  function handleEngineChange(next: RenderEngine) {
+    if (next !== "musetalk" && avatarFile?.type.startsWith("video/")) {
+      setAvatarFile(null);
+    }
+    setRenderEngine(next);
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setFormError("");
+
+    // 实时口型（MuseTalk）依赖真人脸检测，必须上传照片或视频；
+    // 内置数字人是 SVG 几何角色，检测不到人脸。提交前拦截避免无效任务。
+    if (renderEngine === "musetalk" && !avatarFile) {
+      setFormError(
+        "「实时口型」需要上传真人照片或视频（内置数字人是几何角色，检测不到人脸，无法用于口型同步）。请先在上方选择文件。",
+      );
+      return;
+    }
+
+    // 引擎与文件类型一致性校验，规则与后端 route.ts 保持一致：
+    // 仅「实时口型」允许视频，其他引擎只接受图片，避免到提交才被服务器拒绝。
+    if (avatarFile) {
+      const isImage = avatarFile.type.startsWith("image/");
+      const isVideo = avatarFile.type.startsWith("video/");
+      if (!isImage && !(isVideo && renderEngine === "musetalk")) {
+        setFormError(
+          renderEngine === "musetalk"
+            ? "仅支持图片或视频文件。"
+            : "该引擎仅支持图片，上传视频请切换到「实时口型（MuseTalk）」引擎。",
+        );
+        return;
+      }
+    }
 
     const formData = new FormData();
     formData.set("title", title);
@@ -257,7 +290,7 @@ export function StudioClient() {
                   renderEngine === option.id && "motion-chip-active",
                 )}
                 key={option.id}
-                onClick={() => setRenderEngine(option.id)}
+                onClick={() => handleEngineChange(option.id)}
                 type="button"
               >
                 <strong>{option.name}</strong>
@@ -287,46 +320,50 @@ export function StudioClient() {
             <span>上传头像{renderEngine === "musetalk" ? "或视频" : ""}</span>
             <input
               className="file-input"
-              accept={
-                renderEngine === "musetalk"
-                  ? "image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm"
-                  : "image/png,image/jpeg,image/webp"
-              }
+              accept={renderEngine === "musetalk" ? "image/*,video/*" : "image/*"}
               onChange={(event) => {
-                setAvatarFile(event.target.files?.[0] ?? null);
+                const file = event.target.files?.[0] ?? null;
+                setAvatarFile(file);
               }}
               type="file"
             />
+            {avatarFile && (
+              <small className="helper-text" style={{ marginTop: 6 }}>
+                已选择：{avatarFile.name}（{avatarFile.type}）
+              </small>
+            )}
           </label>
         </div>
 
-        <div className="field">
-          <span>内置数字人</span>
-          <div className="avatar-sample-grid">
-            {SAMPLE_AVATARS.map((avatar) => (
-              <button
-                className={cn(
-                  "avatar-sample-card",
-                  sampleAvatarId === avatar.id && "avatar-sample-card-active",
-                )}
-                key={avatar.id}
-                onClick={() => setSampleAvatarId(avatar.id)}
-                type="button"
-              >
-                <Image
-                  alt={avatar.name}
-                  className="avatar-sample-image"
-                  height={200}
-                  sizes="(max-width: 760px) 100vw, 240px"
-                  src={avatar.src}
-                  width={200}
-                />
-                <strong>{avatar.name}</strong>
-                <small>{avatar.description}</small>
-              </button>
-            ))}
+        {renderEngine !== "musetalk" && (
+          <div className="field">
+            <span>内置数字人</span>
+            <div className="avatar-sample-grid">
+              {SAMPLE_AVATARS.map((avatar) => (
+                <button
+                  className={cn(
+                    "avatar-sample-card",
+                    sampleAvatarId === avatar.id && "avatar-sample-card-active",
+                  )}
+                  key={avatar.id}
+                  onClick={() => setSampleAvatarId(avatar.id)}
+                  type="button"
+                >
+                  <Image
+                    alt={avatar.name}
+                    className="avatar-sample-image"
+                    height={200}
+                    sizes="(max-width: 760px) 100vw, 240px"
+                    src={avatar.src}
+                    width={200}
+                  />
+                  <strong>{avatar.name}</strong>
+                  <small>{avatar.description}</small>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {avatarPreviewUrl ? (
           <div className="avatar-preview">
