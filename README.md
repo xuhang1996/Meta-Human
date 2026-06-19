@@ -113,8 +113,7 @@ pnpm lint     # 代码检查
 ## 🗺️ 后续方向
 
 - 迁移到 Redis + worker 进程队列，避免重启丢任务
-- 替换 macOS `say` 为 CosyVoice / GPT-SoVITS，提升音质
-- 接入 MuseTalk 实现更高实时性
+- 替换 Edge-TTS 为 CosyVoice / GPT-SoVITS，提升音质
 - 跨平台支持（替换 Swift Vision 人脸检测）
 - 生产级存储（SQLite/Postgres）
 

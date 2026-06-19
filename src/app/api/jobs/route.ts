@@ -32,6 +32,26 @@ export async function POST(request: Request) {
     "analyst-aurora") as SampleAvatarId;
   const avatar = formData.get("avatar");
 
+  // 空文件（上传中断/截断）不应静默回退到内置头像，明确报错。
+  if (avatar instanceof File && avatar.size === 0) {
+    return Response.json(
+      { error: "上传的文件为空，请重新选择。" },
+      { status: 400 },
+    );
+  }
+
+  // MIME 分类：优先用浏览器提供的 type；浏览器偶发不带 type（拖拽无扩展名文件等），
+  // 用扩展名兜底，避免合法视频被误拒。slugifyFileExtension 已限定白名单扩展名。
+  const avatarExt = avatar instanceof File ? slugifyFileExtension(avatar.name) : "";
+  const isImage =
+    avatar instanceof File &&
+    (avatar.type.startsWith("image/") ||
+      (!avatar.type && [".png", ".jpg", ".jpeg", ".webp"].includes(avatarExt)));
+  const isVideo =
+    avatar instanceof File &&
+    (avatar.type.startsWith("video/") ||
+      (!avatar.type && [".mp4", ".mov", ".webm", ".m4v"].includes(avatarExt)));
+
   if (script.length < 12) {
     return Response.json(
       { error: "文案长度至少需要 12 个字符。" },
@@ -39,10 +59,20 @@ export async function POST(request: Request) {
     );
   }
 
+  // MuseTalk 引擎依赖真人脸检测（MediaPipe/DWPose），内置数字人是 SVG 几何
+  // 角色，检测不到人脸会静默失败。因此强制要求上传照片或视频。
+  if (renderEngine === "musetalk" && !(avatar instanceof File)) {
+    return Response.json(
+      {
+        error:
+          "「实时口型」需要上传真人照片或视频（内置数字人是几何角色，无法用于口型同步）。",
+      },
+      { status: 400 },
+    );
+  }
+
   // MuseTalk 引擎支持上传视频底片（重配音）；其他引擎仅支持图片。
-  if (avatar instanceof File && avatar.size > 0) {
-    const isImage = avatar.type.startsWith("image/");
-    const isVideo = avatar.type.startsWith("video/");
+  if (avatar instanceof File) {
     const allowVideo = renderEngine === "musetalk";
 
     if (!isImage && !(isVideo && allowVideo)) {
@@ -63,16 +93,16 @@ export async function POST(request: Request) {
   let avatarMode: VideoJob["avatarMode"] = "sample";
   let avatarMediaType: VideoJob["avatarMediaType"] = "image";
 
-  if (avatar instanceof File && avatar.size > 0) {
-    avatarFileName = `avatar${slugifyFileExtension(avatar.name)}`;
+  if (avatar instanceof File) {
+    avatarFileName = `avatar${avatarExt}`;
     const avatarBytes = Buffer.from(await avatar.arrayBuffer());
-    await writeFile(`${jobDir}/${avatarFileName}`, avatarBytes);
+    await writeFile(path.join(jobDir, avatarFileName), avatarBytes);
     avatarMode = "upload";
-    avatarMediaType = avatar.type.startsWith("video/") ? "video" : "image";
+    avatarMediaType = isVideo ? "video" : "image";
   } else {
     const sample = SAMPLE_AVATAR_MAP[sampleAvatarId] ?? SAMPLE_AVATAR_MAP["analyst-aurora"];
     const sourcePath = path.join(process.cwd(), "public", sample.src.replace(/^\//, ""));
-    await copyFile(sourcePath, `${jobDir}/${avatarFileName}`);
+    await copyFile(sourcePath, path.join(jobDir, avatarFileName));
   }
 
   const now = new Date().toISOString();
