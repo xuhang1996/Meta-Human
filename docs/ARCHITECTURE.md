@@ -22,7 +22,7 @@
 │                                                              │
 │  api/jobs/route.ts        创建任务，保存头像，入队            │
 │  api/jobs/[jobId]/route.ts 查询单个任务                      │
-│  api/voices/route.ts      列出 macOS say 可用音色            │
+│  api/voices/route.ts      列出 Edge-TTS 可用音色             │
 │                                                              │
 │  lib/store.ts             任务持久化（.data/jobs.json）       │
 │  lib/job-runner.ts        ★ 异步任务调度核心                  │
@@ -33,9 +33,10 @@
 ┌─────────────────────────────────────────────────────────────┐
 │  本地命令行工具                                              │
 │                                                              │
-│  say (macOS)        TTS 语音合成                             │
+│  Edge-TTS (Python)  TTS 语音合成（微软在线语音，免费）       │
 │  ffmpeg / ffprobe   音频转码、视频合成、字幕烧录              │
-│  SadTalker (Python) 高质量口型驱动（CPU 推理）               │
+│  SadTalker (Python) 高质量口型驱动（3DMM，CUDA GPU 推理）    │
+│  MuseTalk  (Python) 实时口型驱动（照片/视频，CUDA GPU 推理） │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -53,9 +54,9 @@
   └─ job-runner.processJob(jobId)
        │
        1. status=processing · 「正在生成语音」
-          └─ ffmpeg.ts:synthesizeSpeech
-               ├─ say -v <voice> -o speech.aiff  （macOS TTS）
-               └─ ffmpeg speech.aiff → speech.m4a （转 AAC）
+          └─ ffmpeg.ts:synthesizeSpeech (Edge-TTS，带指数退避重试)
+               ├─ python -m edge_tts --voice <voice> --text ... --write-media speech.mp3
+               └─ ffmpeg speech.mp3 → speech.m4a （转 AAC）
 
        2. status=processing · 「生成字幕时间轴」
           └─ ffmpeg.ts:buildSubtitles
@@ -65,9 +66,20 @@
 
        3. status=processing · 「渲染」（按引擎分支）
           │
+          ├─ renderEngine=musetalk → renderMuseTalkPresenterVideo
+          │    ├─ ffprobe 探测头像长边；> MUSETALK_MAX_DIMENSION(默认1280)
+          │    │   时先用 ffmpeg 等比缩放长边到 1280（竖图提速关键，见下）
+          │    ├─ ffmpeg: speech.m4a → speech.wav (16kHz mono)
+          │    ├─ 写 musetalk_task.yaml (video_path + audio_path)
+          │    ├─ python -m scripts.inference (MuseTalk v1.5)
+          │    │    输入: 头像/视频底片 + wav
+          │    │    输出: musetalk-out/v15/*.mp4 (口型视频)
+          │    ├─ finally: 删除缩放临时文件 avatar_musetalk.*
+          │    └─ renderTalkingHeadPresenterVideo
+          │
           ├─ renderEngine=model → renderModelPortraitPresenterVideo
           │    ├─ ffmpeg: speech.m4a → speech.wav (16kHz mono)
-          │    ├─ python inference.py (SadTalker)
+          │    ├─ python inference.py (SadTalker, CUDA)
           │    │    输入: 头像 + wav
           │    │    输出: sadtalker-out/<ts>.mp4 (256x256 口型视频)
           │    └─ renderTalkingHeadPresenterVideo
@@ -90,27 +102,33 @@
 
 **分支优先级**（重要，曾因此踩坑）：
 ```
-if renderEngine === "model"     → SadTalker（最高优先级）
+if renderEngine === "musetalk"  → MuseTalk（强制要求上传照片/视频，见下）
+else if renderEngine === "model" → SadTalker（高质量）
 else if avatarMode === "sample" → 内置数字人动效
 else                            → 上传头像几何动效
 ```
-即：一旦用户选了「高质量模型」，无论内置还是上传头像都走 SadTalker。
+- MuseTalk 依赖真人脸检测（MediaPipe/DWPose），内置数字人是 SVG 几何角色检测不到脸，因此后端 (`api/jobs/route.ts`) 与前端 (`studio-client.tsx`) 都强制要求该引擎上传照片或视频，否则报错拦截。
+- 一旦选了「高质量模型」，无论内置还是上传头像都走 SadTalker。
 
 ### `lib/ffmpeg.ts` — 渲染管线
 
-这是最核心也最长的文件（约 530 行），包含：
+这是最核心也最长的文件（约 720 行），包含：
 
 | 函数 | 作用 |
 |---|---|
-| `synthesizeSpeech` | macOS say → aiff → m4a |
+| `synthesizeSpeech` | Edge-TTS → mp3 → m4a（带指数退避重试，应对网络抖动） |
 | `buildSubtitles` | 文案按句拆分 + 时长分配 |
+| `probeVideoDimension` | ffprobe 探测头像/视频长边，用于 MuseTalk 缩放判断 |
 | `renderPresenterVideo` | 静态头像 presenter（最初版本） |
 | `renderAnimatedSamplePresenterVideo` | 内置 SVG 数字人 + 几何动效 |
 | `renderAnimatedPortraitPresenterVideo` | 上传照片 + 几何动效（兜底） |
-| `renderModelPortraitPresenterVideo` | **★ SadTalker 高质量引擎** |
+| `renderModelPortraitPresenterVideo` | **★ SadTalker 高质量引擎（CUDA）** |
+| `renderMuseTalkPresenterVideo` | **★ MuseTalk 实时口型引擎（CUDA）** |
 | `renderTalkingHeadPresenterVideo` | 把口型视频嵌入 presenter 模板 |
 
 所有 presenter 模板共享同一套 ffmpeg filter：背景色 → 面板 → 头像 → 波形 → 标题 → 字幕。
+
+> **MuseTalk 预缩放**：`renderMuseTalkPresenterVideo` 在送入推理前，用 `probeVideoDimension` 取长边，超过 `MUSETALK_MAX_DIMENSION`（默认 1280）时用 `ffmpeg ... scale=...:force_original_aspect_ratio=decrease` 等比缩到长边 1280（MuseTalk 实际只处理 256 脸部区域，不影响口型质量，但大幅降低显存/耗时）。缩放是临时文件，推理结束在 `finally` 里删除。
 
 ### `lib/avatar-motion.ts` — 几何动效引擎（极速预览）
 
@@ -122,14 +140,16 @@ else                            → 上传头像几何动效
 
 ## 渲染引擎对比
 
-| | 极速预览 (fast) | 高质量模型 (model) |
-|---|---|---|
-| 实现 | SVG 几何动效 | SadTalker 3DMM |
-| 口型 | 按音频幅度开合（非音素） | 按音素精确同步 |
-| 表情 | 眨眼 + 漂移 | 眨眼 + 头动 + 表情 |
-| 速度 | 秒级 | 13-40 分钟/3秒（CPU） |
-| 依赖 | 无（纯 Node） | Python + 4.4GB 模型 |
-| 适用 | 流程验证、内置数字人 | **真实人脸正式出片** |
+| | 极速预览 (fast) | 高质量模型 (model) | 实时口型 (musetalk) |
+|---|---|---|---|
+| 实现 | SVG 几何动效 | SadTalker 3DMM | MuseTalk v1.5 |
+| 口型 | 按音频幅度开合（非音素） | 按音素精确同步 | 按音素精确同步 |
+| 输入 | 内置数字人 / 照片 | 照片 | **照片或视频**（视频可重配音） |
+| 速度 | 秒级 | ~30 秒/3 秒（CUDA） | ~20-40 秒/6 秒（CUDA） |
+| 依赖 | 无（纯 Node） | Python + ~4.4GB 模型 | Python + ~3.2GB 模型 |
+| 适用 | 流程验证、内置数字人 | 真实人脸正式出片 | **真实人脸、视频重配音** |
+
+> 三个引擎都需要 Edge-TTS 合成语音（极速预览也用）。CUDA GPU 下 SadTalker/MuseTalk 都是秒级出片；纯 CPU 会慢几十倍。
 
 ## 文件结构
 
@@ -153,20 +173,21 @@ else                            → 上传头像几何动效
 │       ├── types.ts           类型定义
 │       └── utils.ts
 ├── scripts/
-│   ├── detect-face.swift      macOS Vision 人脸检测（几何动效用）
-│   └── setup-sadtalker.sh     SadTalker 一键搭建
+│   ├── detect-face.py         MediaPipe 人脸检测（跨平台，几何动效用）
+│   ├── detect-face.swift      旧版 macOS Vision 人脸检测（已弃用，保留参考）
+│   └── setup-sadtalker.sh     SadTalker 一键搭建（macOS）
 ├── public/avatars/            内置数字人素材
 ├── docs/
 │   ├── ARCHITECTURE.md        本文档
-│   └── SETUP.md               SadTalker 环境搭建
-└── .env.example               环境变量模板
+│   └── SETUP.md               SadTalker / MuseTalk 环境搭建
+└── .env.example               环境变量模板（含全部引擎配置）
 ```
 
 ## 已知限制与后续方向
 
-- **CPU 推理慢**：SadTalker 在 M1 CPU 上 3 秒视频要 13 分钟。生产建议上 CUDA GPU 或云推理服务。
+- **GPU 依赖**：SadTalker / MuseTalk 在 CUDA GPU 上才实用（秒级）。纯 CPU 会慢几十倍，不建议。
+- **Edge-TTS 网络**：语音合成走微软在线接口（`speech.platform.bing.com`），国内网络偶发 TLS 重置；已加指数退避重试，但仍可能需要代理。
 - **进程内队列**：重启会丢失正在运行的任务。应迁移到 Redis + worker。
-- **macOS 强依赖**：TTS 用 `say`、人脸检测用 Swift Vision。跨平台需替换这两处。
+- **平台**：当前在 Windows + NVIDIA GPU 验证；极速预览的人脸检测用了跨平台方案（MediaPipe），SadTalker/MuseTalk 走 Python 子进程，本身跨平台。
 - **单文件存储**：`.data/jobs.json` 不适合高并发，应换数据库。
-- **GFPGAN 默认关闭**：CPU 上太慢。有 GPU 后可开启提升面部清晰度。
-- **TTS 升级**：macOS say 音质一般，可换 CosyVoice / GPT-SoVITS。
+- **TTS 升级**：Edge-TTS 音质尚可但依赖网络，可换本地 CosyVoice / GPT-SoVITS。
